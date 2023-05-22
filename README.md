@@ -1,2 +1,1 @@
 # gh-trusted-builds-app
-
