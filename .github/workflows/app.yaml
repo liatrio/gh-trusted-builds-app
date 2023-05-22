@@ -1,0 +1,29 @@
+name: app
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@main
+  security-scan:
+    needs: [build-and-push]
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@main
+    with:
+      digest: ${{ needs.build-and-push.outputs.digest }}
+  policy-verification:
+    needs:
+      - build-and-push
+      - security-scan
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/policy-verification.yaml@main
+    with:
+      digest: ${{ needs.build-and-push.outputs.digest }}
+  deploy:
+    needs:
+      - build-and-push
+      - policy-verification
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/demo-deploy.yaml@main
+    with:
+      digest: ${{ needs.build-and-push.outputs.digest }}
