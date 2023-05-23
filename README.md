@@ -216,7 +216,7 @@ Once the signing is finished, the key pair can be discarded, as the certificate 
 
 For a more concrete example, this is a sequence diagram that shows how a GitHub Actions workflow might build & sign a container image:
 
-<img src="assets/fulcio.svg"/>
+![Fulcio certificate issuance](https://raw.githubusercontent.com/liatrio/gh-trusted-builds-app/main/assets/fulcio.svg)
 
 Later, when someone tries to validate the signature, they can check that the certificate chains up to the Fulcio root, that the signature happened during the window when the certificate was valid,
 and, most importantly, verify that the certificate identity matches the expected signer.
