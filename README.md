@@ -236,7 +236,7 @@ sequenceDiagram
     Workflow->>CR: Push Image & signature
     CR-->>Workflow: Registry response
     Workflow->>Rekor: Log entry request to upload signature & signing certificate
-    Rekor->>Workflow: Upload response
+    Rekor-->>Workflow: Upload response
 ```
 
 Later, when someone tries to validate the signature, they can check that the certificate chains up to the Fulcio root, that the signature happened during the window when the certificate was valid,
