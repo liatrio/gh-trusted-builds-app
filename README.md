@@ -210,34 +210,8 @@ After receiving the certificate, `cosign` or other tools can sign images or atte
 Once the signing is finished, the key pair can be discarded, as the certificate will be in Rekor for validation later.
 
 For a more concrete example, this is a sequence diagram that shows how a GitHub Actions workflow might build & sign a container image:
-```mermaid
-sequenceDiagram
-    autonumber
-    participant CR as Container Registry
-    participant Rekor
-    participant Workflow
-    participant GHA as GitHub Actions Issuer
-    participant Fulcio
-    participant CTL as Certificate Transparency Log
-    Workflow->>Workflow: Build container image
-    Workflow->>GHA: HTTP request to $ACTIONS_ID_TOKEN_REQUEST_URL with $ACTIONS_RUNTIME_TOKEN
-    GHA-->>Workflow: ID token response
-    Workflow->>Workflow: Generate public/private keypair
-    Workflow->>Workflow: Create CSR or sign subject claim
-    Workflow->>Fulcio: Signing certificate request
-    Fulcio->>GHA: OpenID Connect discovery request
-    GHA-->>Fulcio: OpenID Connect discovery response
-    Fulcio->>GHA: JWKS request
-    GHA-->>Fulcio: JWKS response
-    Note over Fulcio,GHA: Note: these responses would likely be cached
-    Fulcio->>CTL: Precertificate request for signed certificate timestamp (SCT)
-    CTL-->Fulcio: SCT response
-    Fulcio-->>Workflow: Signing certificate response
-    Workflow->>CR: Push Image & signature
-    CR-->>Workflow: Registry response
-    Workflow->>Rekor: Log entry request to upload signature & signing certificate
-    Rekor-->>Workflow: Upload response
-```
+
+![Fulcio certificate issuance](./assets/fulcio.svg)
 
 Later, when someone tries to validate the signature, they can check that the certificate chains up to the Fulcio root, that the signature happened during the window when the certificate was valid,
 and, most importantly, verify that the certificate identity matches the expected signer.

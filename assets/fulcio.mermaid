@@ -1,0 +1,26 @@
+sequenceDiagram
+    autonumber
+    participant CR as Container Registry
+    participant Rekor
+    participant Workflow
+    participant GHA as GitHub Actions Issuer
+    participant Fulcio
+    participant CTL as Certificate Transparency Log
+    Workflow->>Workflow: Build container image
+    Workflow->>GHA: HTTP request to $ACTIONS_ID_TOKEN_REQUEST_URL with $ACTIONS_RUNTIME_TOKEN
+    GHA-\->>Workflow: ID token response
+    Workflow->>Workflow: Generate public/private keypair
+    Workflow->>Workflow: Create CSR or sign subject claim
+    Workflow->>Fulcio: Signing certificate request
+    Fulcio->>GHA: OpenID Connect discovery request
+    GHA-->>Fulcio: OpenID Connect discovery response
+    Fulcio->>GHA: JWKS request
+    GHA-->>Fulcio: JWKS response
+    Note over Fulcio,GHA: Note: these responses would likely be cached
+    Fulcio->>CTL: Precertificate request for signed certificate timestamp (SCT)
+    CTL-->Fulcio: SCT response
+    Fulcio-->>Workflow: Signing certificate response
+    Workflow->>CR: Push Image & signature
+    CR-->>Workflow: Registry response
+    Workflow->>Rekor: Log entry request to upload signature & signing certificate
+    Rekor-->>Workflow: Upload response
