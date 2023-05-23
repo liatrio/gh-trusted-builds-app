@@ -1,3 +1,6 @@
+%% npm install -g @mermaid-js/mermaid-cli
+%% mmdc -t dark -i fulcio.mmd -o fulcio.svg -b black
+
 sequenceDiagram
     autonumber
     participant CR as Container Registry
@@ -8,7 +11,7 @@ sequenceDiagram
     participant CTL as Certificate Transparency Log
     Workflow->>Workflow: Build container image
     Workflow->>GHA: HTTP request to $ACTIONS_ID_TOKEN_REQUEST_URL with $ACTIONS_RUNTIME_TOKEN
-    GHA-\->>Workflow: ID token response
+    GHA-->>Workflow: ID token response
     Workflow->>Workflow: Generate public/private keypair
     Workflow->>Workflow: Create CSR or sign subject claim
     Workflow->>Fulcio: Signing certificate request
