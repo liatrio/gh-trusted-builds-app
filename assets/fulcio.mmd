@@ -20,8 +20,10 @@ sequenceDiagram
     Fulcio->>GHA: JWKS request
     GHA-->>Fulcio: JWKS response
     Note over Fulcio,GHA: Note: these responses would likely be cached
+    Fulcio->>Fulcio: Verify id token signature & claims
+    Fulcio->>Fulcio: Create certificate from id token claims
     Fulcio->>CTL: Precertificate request for signed certificate timestamp (SCT)
-    CTL-->Fulcio: SCT response
+    CTL-->>Fulcio: SCT response
     Fulcio-->>Workflow: Signing certificate response
     Workflow->>CR: Push Image & signature
     CR-->>Workflow: Registry response
