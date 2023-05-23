@@ -174,10 +174,15 @@ id token in the `value` field of the JSON response.
 For a more in-depth overview of using GitHub Actions' OIDC feature with reusable workflows, the SLSA GitHub Generator [specifications](https://github.com/slsa-framework/slsa-github-generator/blob/main/SPECIFICATIONS.md)
 go into additional detail.
 
-#### Sigstore: Cosign & Policy Controller
+#### Sigstore: Cosign
 
 Cosign is a tool from the [Sigstore project](https://www.sigstore.dev/) for signing and verifying container images, blobs, and attestations. It also supports running [OPA](https://www.openpolicyagent.org/docs/latest/) or [CUE](https://cuelang.org/docs/) policies
-against those attestations. In this demonstration, cosign is used to sign images and attestations, while another Sigstore project, the [policy controller](https://docs.sigstore.dev/policy-controller/overview/), is used to gate Kubernetes deployments.
+against those attestations. In this demonstration, we'll use cosign to sign both a container image and a number of attestations about the image.
+
+#### Sigstore: Policy Controller
+
+Another Sigstore project, the [policy controller](https://docs.sigstore.dev/policy-controller/overview/), is used to gate Kubernetes deployments with OPA or CUE policy.
+It can verify that images are signed and check the attestations against a supplied policy. We'll use it in this demo to check that our container image has an attestation signed by the right identity.
 
 #### Sigstore: Rekor Transparency Log
 
