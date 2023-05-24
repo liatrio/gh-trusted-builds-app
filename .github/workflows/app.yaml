@@ -7,23 +7,23 @@ on:
 
 jobs:
   build-and-push:
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@main
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@attestation-v1.0.0
   security-scan:
     needs: [build-and-push]
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@main
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@attestation-v1.0.0
     with:
       digest: ${{ needs.build-and-push.outputs.digest }}
   policy-verification:
     needs:
       - build-and-push
       - security-scan
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/policy-verification.yaml@main
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/policy-verification.yaml@attestation-v1.0.0
     with:
       digest: ${{ needs.build-and-push.outputs.digest }}
   deploy:
     needs:
       - build-and-push
       - policy-verification
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/demo-deploy.yaml@main
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/demo-deploy.yaml@attestation-v1.0.0
     with:
       digest: ${{ needs.build-and-push.outputs.digest }}
