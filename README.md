@@ -891,8 +891,7 @@ Next, the `verify` job invokes [`liatrio/gh-trusted-builds-attestations`](https:
     attestation vsa \
       --artifact-uri ghcr.io/${{ github.repository }} \
       --artifact-digest ${{ inputs.digest }} \
-      --commit-sha ${{ github.sha }} \
-      --policy-version "v1.1.1" \
+      --policy-url "https://github.com/liatrio/gh-trusted-builds-policy/releases/download/v1.1.1/bundle.tar.gz" \
       --verifier-id ${{ github.server_url }}/${{ needs.metadata.outputs.jobWorkflowRef }} \
       --fulcio-url ${{ inputs.fulcioUrl }} \
       --rekor-url ${{ inputs.rekorUrl }}
