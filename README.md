@@ -27,9 +27,146 @@ This repository is a demonstration of using GitHub Actions as that trusted build
 - [`liatrio/github-trusted-builds-attestations`](https://github.com/liatrio/gh-trusted-builds-attestations): a tool for creating attestations of different types
 - [`liatrio/github-trusted-builds-policy`](https://github.com/liatrio/gh-trusted-builds-policy): Rego policy used to evaluate attestations
 
+### Scenario
+
+In this demonstration, multiple teams must approve a software artifact for deployment to production. 
+As a shorthand, we'll call these teams the "central" teams for their particular domain; as opposed to "application" teams, who are responsible for the development and maintenance of one or more applications.
+
+First up is the platform team, which is responsible for providing a Kubernetes cluster and deployment tooling.
+To facilitate automatic approvals, the platform team maintains a reusable GitHub Actions workflow that builds container images from source and pushes them to GitHub Container Registry.
+The images are annotated and signed by the workflow; in addition, a record of the signature is also
+uploaded to [Rekor](https://docs.sigstore.dev/rekor/overview/), which is a transparency log for supply chain security. In order to use the workflow, application teams only have to specify the reference to it in a job:
+
+```yaml
+jobs:
+  build-and-push:
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@main
+```
+
+The security team also needs to approve which artifacts are deployed to production.
+Like the platform team, they provide a reusable workflow that scans container images for vulnerabilities and another workflow that evaluates if an
+artifact meets enterprise policy. This latter workflow produces a [verification summary attestation](https://slsa.dev/verification_summary/v1) (VSA) which
+indicates if the artifact passed or failed policy. Later on, the platform team can check for the existence of this VSA and approve or deny deployment accordingly.
+
 ### Technologies
 
 Before diving into the workflows, it may be helpful to briefly review the core technologies used by the demo.
+
+#### in-toto Attestations
+
+Much of this demo is involved with producing attestations, or signed statements about a software artifact.
+A popular format for attestations comes from the [in-toto](https://in-toto.io/) project, which is focused on software supply-chain security.
+While this demonstration does not use in-toto directly, many open source projects outside in-toto use the in-toto attestation format; this includes all the attestations created in this demo.
+
+The in-toto format consists of several pieces:
+- predicate: structured information about a software artifact. The predicate type determines the structure and type of data available. 
+- statement: contains the predicate and provides a list of subjects (software artifacts) described by the predicate.
+- envelope: the wrapper for the statement and any signatures.
+
+Here's an example of an in-toto attestation:
+```json
+{
+  "payloadType": "application/vnd.in-toto+json",
+  "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJuYW1lIjoiZ2hjci5pby9saWF0cmlvL2doLXRydXN0ZWQtYnVpbGRzLWFwcCIsImRpZ2VzdCI6eyJzaGEyNTYiOiI0ZDllNzdmZWRjYTI5MzkzZGZmOWEzOWIwNjVkMTU4YWFhOTY0NGMxOGIyYzUxZjc1ZmNhZjg0YjhjOTQxYWJmIn19XSwicHJlZGljYXRlVHlwZSI6Imh0dHBzOi8vc2xzYS5kZXYvdmVyaWZpY2F0aW9uX3N1bW1hcnkvdjAuMiIsInByZWRpY2F0ZSI6eyJpbnB1dF9hdHRlc3RhdGlvbnMiOlt7ImRpZ2VzdCI6eyJzaGEyNTYiOiJmMTQwZjg4NjA5NzQ5YWQ5OWUwNTgzYzUyZWNkNWNmMTZjMmU1ZTJjNTBjZDYxNDAzNjRhOTkxY2MxYWYyMmRhIn0sInVyaSI6Imh0dHBzOi8vcmVrb3Iuc2lnc3RvcmUuZGV2L2FwaS92MS9sb2cvZW50cmllcz9sb2dJbmRleD0yMTQ0OTgzMSJ9LHsiZGlnZXN0Ijp7InNoYTI1NiI6ImU3Y2M5ODk2OGU5MDJmMDA2M2I5YWQ0OTJiMjJlYzJkMGE2NDdmMzQzZWQxNjg5YzBhMzdjYjNlZjc2ZjljMzEifSwidXJpIjoiaHR0cHM6Ly9yZWtvci5zaWdzdG9yZS5kZXYvYXBpL3YxL2xvZy9lbnRyaWVzP2xvZ0luZGV4PTIxNDQ5ODM0In0seyJkaWdlc3QiOnsic2hhMjU2IjoiOTk1ZWY1ZjYwODkzOGYwM2JmNzQxNWI2NTIzYTVlYzFjYTIwZDFmMWNkMzdkNjUwYzIzM2FlYjM2NThmYjFmYSJ9LCJ1cmkiOiJodHRwczovL3Jla29yLnNpZ3N0b3JlLmRldi9hcGkvdjEvbG9nL2VudHJpZXM/bG9nSW5kZXg9MjE0NDk4NjEifV0sInBvbGljeSI6eyJ1cmkiOiJodHRwczovL2dpdGh1Yi5jb20vbGlhdHJpby9naC10cnVzdGVkLWJ1aWxkcy1wb2xpY3kvcmVsZWFzZXMvZG93bmxvYWQvdjEuMS4xL2J1bmRsZS50YXIuZ3oifSwicG9saWN5X2xldmVsIjoiU0xTQV9MRVZFTF8zIiwicmVzb3VyY2VfdXJpIjoiZ2hjci5pby9saWF0cmlvL2doLXRydXN0ZWQtYnVpbGRzLWFwcCIsInRpbWVfdmVyaWZpZWQiOiIyMDIzLTA1LTIzVDE3OjUyOjE0LjE4NjE2MTE2NVoiLCJ2ZXJpZmljYXRpb25fcmVzdWx0IjoiUEFTU0VEIiwidmVyaWZpZXIiOnsiaWQiOiJodHRwczovL2dpdGh1Yi5jb20vbGlhdHJpby9naC10cnVzdGVkLWJ1aWxkcy13b3JrZmxvd3MvLmdpdGh1Yi93b3JrZmxvd3MvcG9saWN5LXZlcmlmaWNhdGlvbi55YW1sQHJlZnMvaGVhZHMvbWFpbiJ9fX0=",
+  "signatures": [
+    {
+      "keyid": "",
+      "sig": "MEUCICYn68n2eOij6SLpgnzz1lyrW5dSixGRambvA/625DwiAiEAktVa8wx6mqSYpzzsVWUzcaAZcLsQYs/paYFRJGpSx2o="
+    }
+  ]
+}
+```
+
+This is the envelope, which contains the in-toto statement in the payload field. Decoding the payload field shows the statement:
+
+<details>
+<summary>example in-toto statement (click to expand)</summary>
+
+```json
+{
+  "_type": "https://in-toto.io/Statement/v1",
+  "subject": [
+    {
+      "name": "ghcr.io/liatrio/gh-trusted-builds-app",
+      "digest": {
+        "sha256": "4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf"
+      }
+    }
+  ],
+  "predicateType": "https://slsa.dev/verification_summary/v0.2",
+  "predicate": {
+    "input_attestations": [
+      {
+        "digest": {
+          "sha256": "f140f88609749ad99e0583c52ecd5cf16c2e5e2c50cd6140364a991cc1af22da"
+        },
+        "uri": "https://rekor.sigstore.dev/api/v1/log/entries?logIndex=21449831"
+      },
+      {
+        "digest": {
+          "sha256": "e7cc98968e902f0063b9ad492b22ec2d0a647f343ed1689c0a37cb3ef76f9c31"
+        },
+        "uri": "https://rekor.sigstore.dev/api/v1/log/entries?logIndex=21449834"
+      },
+      {
+        "digest": {
+          "sha256": "995ef5f608938f03bf7415b6523a5ec1ca20d1f1cd37d650c233aeb3658fb1fa"
+        },
+        "uri": "https://rekor.sigstore.dev/api/v1/log/entries?logIndex=21449861"
+      }
+    ],
+    "policy": {
+      "uri": "https://github.com/liatrio/gh-trusted-builds-policy/releases/download/v1.1.1/bundle.tar.gz"
+    },
+    "policy_level": "SLSA_LEVEL_3",
+    "resource_uri": "ghcr.io/liatrio/gh-trusted-builds-app",
+    "time_verified": "2023-05-23T17:52:14.186161165Z",
+    "verification_result": "PASSED",
+    "verifier": {
+      "id": "https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/policy-verification.yaml@refs/heads/main"
+    }
+  }
+}
+```
+
+</details>
+
+This statement links a particular container image (`ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf`) to a predicate (`https://slsa.dev/verification_summary/v0.2`).
+We'll see more on this predicate type later. For more information about in-toto attestations, the [official specification](https://github.com/in-toto/attestation/tree/main/spec) is a good place to start.
+
+#### SLSA
+
+Software supply-chain security has been a growing concern in the past few years.
+[SLSA](https://slsa.dev/) (supply-chain levels for software artifacts) is an attempt to codify best practices around producing software artifacts by describing a series of standards and levels that a software artifact can obtain.
+A higher level indicates a more secure and robust software delivery process. The SLSA website gives a more [comprehensive overview](https://slsa.dev/spec/v1.0/levels) of the levels.
+
+The initial focus of SLSA is around how software is built, and the framework describes a [provenance attestation](https://slsa.dev/provenance/v1). Provenance links a software artifact to the source code from which it was created, as well as the method and environment in which the build ran.
+The project also provides some tools for creating provenance, like the [`slsa-github-generator`](https://github.com/slsa-framework/slsa-github-generator), which provides ways to create provenance attestations for different artifact types built in GitHub Actions.
+This demonstration uses the SLSA container generator to create a provenance attestation.
+
+#### Open Policy Agent
+
+Open Policy Agent (OPA) is a set of tools for writing and executing policies in a language called Rego.
+The policies are used to authorize some request or event, given input data. For example, this is part of a larger policy used in this demo to check that a pull request had at least one reviewer:
+
+```rego
+package security.pullrequest
+
+default allow = false
+
+allow {
+	count(violation) == 0
+}
+
+violation[msg] {
+	count(input.predicate.reviewers) < 1
+	msg := "pull request reviewers is less than 1"
+}
+```
+
+This demonstration uses Rego in multiple places: first [`liatrio/github-trusted-builds-attestations`](https://github.com/liatrio/gh-trusted-builds-attestations) uses [policy](https://github.com/liatrio/gh-trusted-builds-policy) on
+the attestations generated by the workflow in order to produce a [verification summary attestation](https://slsa.dev/verification_summary/v1) (VSA). Later on, when the workflow attempts to deploy to a local Kubernetes cluster, the [Sigstore policy controller](https://docs.sigstore.dev/policy-controller/overview/)
+is configured with a Rego policy that checks the attributes of the VSA produced earlier.
 
 #### GitHub Actions: Reusable Workflows
 
@@ -221,27 +358,6 @@ For a more concrete example, this is a sequence diagram that shows how a GitHub 
 Later, when someone tries to validate the signature, they can check that the certificate chains up to the Fulcio root, that the signature happened during the window when the certificate was valid,
 and, most importantly, verify that the certificate identity matches the expected signer.
 Anyone can use the [Sigstore public good Fulcio instance](https://fulcio.sigstore.dev/) to get a certificate, so it's important that you only trust signatures from identities that you trust.
-
-### Scenario
-
-In this demonstration, multiple teams must approve a software artifact for deployment to production.  
-As a shorthand, we'll call these teams the "central" teams for their particular domain; as opposed to "application" teams, who are responsible for the development and maintenance of one or more applications.
-
-First up is the platform team, which is responsible for providing a Kubernetes cluster and deployment tooling.
-To facilitate automatic approvals, the platform team maintains a reusable GitHub Actions workflow that builds container images from source and pushes them to GitHub Container Registry.
-The images are annotated and signed by the workflow; in addition, a record of the signature is also
-uploaded to [Rekor](https://docs.sigstore.dev/rekor/overview/), which is a transparency log for supply chain security. In order to use the workflow, application teams only have to specify the reference to it in a job:
-
-```yaml
-jobs:
-  build-and-push:
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@main
-```
-
-The security team also needs to approve which artifacts are deployed to production.
-Like the platform team, they provide a reusable workflow that scans container images for vulnerabilities and another workflow that evaluates if an
-artifact meets enterprise policy. This latter workflow produces a [verification summary attestation](https://slsa.dev/verification_summary/v1) (VSA) which
-indicates if the artifact passed or failed policy. Later on, the platform team can check for the existence of this VSA and approve or deny deployment accordingly.
 
 ## Workflows
 
@@ -1073,7 +1189,7 @@ main.go:74: error during command execution: none of the attestations matched the
 We tried to ask `cosign` to verify the existence of a `foo` attestation, signed by the `build-and-push` workflow, and because there is no `foo` attestation, `cosign` will report that it wasn't able to find one.
 
 The output will be similar if we ask `cosign` to verify an attestation that does exist, but was signed by a different identity. 
-In this case, we'll try to verify that the vuln attestation was signed by the `build-and-push` workflow, when it was actually signed by the `scan-image` workflwo. 
+In this case, we'll try to verify that the vuln attestation was signed by the `build-and-push` workflow, when it was actually signed by the `scan-image` workflow. 
 
 ```shell
 $ cosign verify-attestation \
@@ -1087,11 +1203,12 @@ Error: none of the attestations matched the predicate type: vuln, found: https:/
 main.go:74: error during command execution: none of the attestations matched the predicate type: vuln, found: https://liatr.io/attestations/github-pull-request/v1,https://slsa.dev/provenance/v0.2  
 ```
 
-In this case, the output is very similar, even though we know that the `vuln` attestation does exist. However, `cosign` first filters the signatures by the signer identities, so it's only looking at the identity that we specified (i.e., the `build-and-push` workflow).  
+In this case, the output is very similar, even though we know that the `vuln` attestation does exist. However, `cosign` first filters the signatures by the signer identities, so it's only looking at the identity that we specified (i.e., the `build-and-push` workflow).
 
 ## Additional Resources
 
 - [Sigstore Security Model](https://docs.sigstore.dev/security/) - an overview of the security model for different Sigstore components.
+- [in-toto specification](https://github.com/in-toto/attestation/tree/main/spec)
 - [Fulcio certificate issuance overview](https://github.com/sigstore/fulcio/blob/main/docs/how-certificate-issuing-works.md)
 - [Fulcio certificate extensions](https://github.com/sigstore/fulcio/blob/main/docs/oid-info.md)
 - [transparency.dev](https://transparency.dev/) - an overview of the verifiable data structures behind Rekor and Fulcio's certificate transparency log.
