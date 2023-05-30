@@ -359,40 +359,55 @@ Later, when someone tries to validate the signature, they can check that the cer
 and, most importantly, verify that the certificate identity matches the expected signer.
 Anyone can use the [Sigstore public good Fulcio instance](https://fulcio.sigstore.dev/) to get a certificate, so it's important that you only trust signatures from identities that you trust.
 
+#### Software Bill of Materials (SBOM)
+
+A software bill of materials describes the components that make up a software artifact.
+The SBOM includes the dependencies of an artifact and may include licensing information about the artifact and its dependencies.
+While an SBOM can be useful to enforce internal licensing standards, it's also valuable for vulnerability analysis; this is especially true when there's a need to retroactively look at software running in production and determine if it's vulnerable to a new attack.
+If an organization already has SBOMs for the software it's running, it becomes much easier to tell if there's an impact from a new vulnerability.
+
+There are several standard formats, like [SPDX](https://spdx.dev/) from the Linux Foundation and [CycloneDX](https://cyclonedx.org/) from OWASP.
+Fortunately, there are a number of tools for generating and working with SBOMs and most tools understand multiple standards. In this demonstration, we're using SPDX as the format and [Syft](https://github.com/anchore/syft) as the tool to generate SBOMs.
+
 ## Workflows
 
 The demo makes use of several reusable workflows defined in [`liatrio/gh-trusted-builds-workflows`](https://github.com/liatrio/gh-trusted-builds-workflows). 
 Each workflow is owned by either the platform or security teams.
 
-![Workflow run](./assets/workflows.png)
+![Workflow run](https://raw.githubusercontent.com/liatrio/gh-trusted-builds-app/main/assets/workflows.png)
 
 ### Platform: Build & Push
 
 The platform team's `build-and-push` workflow is split into several jobs:
-- `source-attestations`
+- `detect-workflow`
 - `build`
 - `push`
 - `sign`
+- `source-attestations`
 - `provenance`
+- `sbom`
 
 The `build` job uses Docker to build a container image, but doesn't push it to a container registry. 
-Instead, the job outputs a tar file that can be pushed later. The reason to split build and push is that the build step is executing potentially untrusted code from the application team, and we don't want that job to be able to request the id token that's used for signing or to try to push a malicious image. So the `build` job only has the permissions it needs in order to checkout the repo:
+Instead, the job outputs a tar file that will be pushed by the next job. 
+The reason to split build and push is that the build step is executing untrusted code from the application team; consequently, we don't want that job to be able to request the id token that's used for signing or to try to push a malicious image.
+It's also often the case that organizations will use a central registry for all teams, and the authenticated machine identity is likely to have access to more repositories than the one used by the application image. 
+In that case, the `build` job could even push images to other repositories; while the authentication in this demo is scoped to the `liatrio/gh-trusted-builds-app` repository, it's still important to separate these steps for those reasons. 
+
+So the `build` job only has the permissions it needs in order to checkout the repo:
 
 ```yaml
 jobs:
   build:
     permissions:
-      id-token: none
       contents: read
 ```
 
-Next up is the `push` job, which loads the tar file from the `build` job and pushes it to GitHub Container Registry (GHCR). Like the build job, it only has the permissions it needs:
+Next up is the push job, which loads the tar file from the build job and pushes it to GitHub Container Registry (GHCR). Like the build job, it only has the permissions it needs to write to the registry:
 
 ```yaml
 jobs:
   push:
     permissions:
-      contents: read
       packages: write
 ```
 
@@ -421,12 +436,11 @@ The `sign` job uses `cosign` to sign the image and annotate it with the workflow
         --yes ghcr.io/${{ github.repository }}@${{ needs.push.outputs.digest }}
 ```
 
-Lastly, the `provenance` and `source-attestations` job both produce attestations that are signed by the workflow. 
+Next, the `provenance` and `source-attestations` job both produce attestations that are signed by the workflow. 
 The `provenance` job uses the container generator from [`slsa-framework/slsa-github-generator`](https://github.com/slsa-framework/slsa-github-generator) to produce a [provenance attestation](https://slsa.dev/provenance/v1) that links the container image and source code, along with some metadata about how the artifact was produced. 
 Because the workflow is only using the generator, it doesn't have the full context necessary to populate the entire provenance, so some fields aren't present.
 
 Here's an example of the provenance generated by this job ([Rekor entry](https://search.sigstore.dev/?logIndex=21341723)):
-
 
 <details>
 <summary>SLSA Provenance attestation (click to expand)</summary>
@@ -725,6 +739,110 @@ predicate:
   predicateCreatedAt: '2023-05-22T15:28:48.369418041Z'
 ```
 
+Finally, the last job in this workflow, called `sbom`, produces a software bill of materials using [Syft](https://github.com/anchore/syft).
+The workflow runs Syft against the pushed image and produces an SBOM in the [SPDX](https://spdx.dev/) format.
+Then the job runs `cosign attest` in order to sign and upload the SBOM as an attestation.
+While there's support in Syft for attesting the SBOM through `sfyt attest`, we're using `cosign` directly for more fine-grained configuration:
+
+```
+$ syft -o spdx-json --file sbom.spdx.json ghcr.io/${{ github.repository }}@${{ needs.push.outputs.digest }}
+
+$ cosign attest --predicate="sbom.spdx.json" \
+   --rekor-url ${{ inputs.rekorUrl }} \
+   --type spdxjson \
+   --fulcio-url ${{ inputs.fulcioUrl }} \
+   --yes \
+   ghcr.io/${{ github.repository }}@${{ needs.push.outputs.digest }}
+```
+
+For an example of an SBOM, here's an attestation from one of the workflow runs ([Rekor log entry](https://search.sigstore.dev/?logIndex=21791183)):
+
+<details>
+<summary>SPDX bill of materials (click to expand)</summary>
+
+```yaml
+_type: https://in-toto.io/Statement/v0.1
+predicateType: https://spdx.dev/Document
+subject:
+  - name: ghcr.io/liatrio/gh-trusted-builds-app
+    digest:
+      sha256: 294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc
+predicate:
+  SPDXID: SPDXRef-DOCUMENT
+  creationInfo:
+    created: '2023-05-26T22:02:06Z'
+    creators:
+      - 'Organization: Anchore, Inc'
+      - 'Tool: syft-0.82.0'
+    licenseListVersion: '3.20'
+  dataLicense: CC0-1.0
+  documentNamespace: >-
+    https://anchore.com/syft/image/ghcr.io/liatrio/gh-trusted-builds-app@sha256-294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc-5b3e747f-d8dc-4a0b-a01f-60d9ed082d68
+  files:
+    - SPDXID: SPDXRef-File-app-d20c3eddd3b3b879
+      checksums:
+        - algorithm: SHA1
+          checksumValue: '0000000000000000000000000000000000000000'
+      comment: >-
+        layerID:
+        sha256:53ea96ed00f53fed01d48a16b049a99938902ed5ee4517e57f464d7fabacb33f
+      copyrightText: ''
+      fileName: /app
+      fileTypes:
+        - OTHER
+      licenseConcluded: NOASSERTION
+    - SPDXID: SPDXRef-File-app-server-50b4875c6ae53f25
+      checksums:
+        - algorithm: SHA256
+          checksumValue: a947dcd63d19e76e860f32f8bdd33ca47297d10d8e6f1a2eb913224d93fe9fe4
+      comment: >-
+        layerID:
+        sha256:53ea96ed00f53fed01d48a16b049a99938902ed5ee4517e57f464d7fabacb33f
+      copyrightText: ''
+      fileName: /app/server
+      fileTypes:
+        - APPLICATION
+        - BINARY
+      licenseConcluded: NOASSERTION
+  name: >-
+    ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc
+  packages:
+    - SPDXID: >-
+        SPDXRef-Package-go-module-github.com-liatrio-gh-trusted-builds-app-1808e23a377c2b90
+      copyrightText: NOASSERTION
+      downloadLocation: NOASSERTION
+      externalRefs:
+        - referenceCategory: SECURITY
+          referenceLocator: cpe:2.3:a:liatrio:gh-trusted-builds-app:\(devel\):*:*:*:*:*:*:*
+          referenceType: cpe23Type
+        - referenceCategory: SECURITY
+          referenceLocator: cpe:2.3:a:liatrio:gh_trusted_builds_app:\(devel\):*:*:*:*:*:*:*
+          referenceType: cpe23Type
+        - referenceCategory: PACKAGE-MANAGER
+          referenceLocator: pkg:golang/github.com/liatrio/gh-trusted-builds-app@(devel)
+          referenceType: purl
+      licenseConcluded: NOASSERTION
+      licenseDeclared: NOASSERTION
+      name: github.com/liatrio/gh-trusted-builds-app
+      sourceInfo: 'acquired package info from go module information: /app/server'
+      versionInfo: (devel)
+  relationships:
+    - comment: >-
+        evident-by: indicates the package's existence is evident by the given
+        file
+      relatedSpdxElement: SPDXRef-File-app-server-50b4875c6ae53f25
+      relationshipType: OTHER
+      spdxElementId: >-
+        SPDXRef-Package-go-module-github.com-liatrio-gh-trusted-builds-app-1808e23a377c2b90
+    - relatedSpdxElement: SPDXRef-DOCUMENT
+      relationshipType: DESCRIBES
+      spdxElementId: SPDXRef-DOCUMENT
+  spdxVersion: SPDX-2.3
+```
+
+</details>
+
+
 ### Security: Image Scan
 
 Now that the image is built, it needs to be scanned for vulnerabilities by an approved image scanner. 
@@ -875,11 +993,11 @@ predicate:
 ```
 
 Internally, the `policy-verification` workflow has two jobs:
-- `metadata`
+- `detect-workflow`
 - `verify`
 
-The `metadata` job determines the reusable workflow ref by requesting an id token and grabbing the `job_workflow_ref` claim, which is used later by the `verify` job to populate the `verifier.id` field in the SLSA VSA.
-This job may go away in the future if GitHub enhances the `github` context by making the `job_workflow_ref` information available directly. 
+The `detect-workflow` job determines the reusable workflow ref by requesting an id token and grabbing the `job_workflow_ref` claim, which is used later by the `verify` job to populate the `verifier.id` field in the SLSA VSA.
+This job may be removed in the future if GitHub enhances the `github` context by making the `job_workflow_ref` information available directly.
 
 Next, the `verify` job invokes [`liatrio/gh-trusted-builds-attestations`](https://github.com/liatrio/gh-trusted-builds-attestations) with the `vsa` subcommand:
 
@@ -979,20 +1097,20 @@ However, there's more that could be done to make the error understandable for en
 While the image attestations are validated by [`liatrio/gh-trusted-builds-attestations`](https://github.com/liatrio/gh-trusted-builds-attestations) and the `policy-controller`, it's also possible to validate the steps that were done in 
 this demo by using `cosign` directly.
 
-To demonstrate, we'll use this [workflow run](https://github.com/liatrio/gh-trusted-builds-app/actions/runs/5060470573) which produced the image `ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf`.
+To demonstrate, we'll use this [workflow run](https://github.com/liatrio/gh-trusted-builds-app/actions/runs/5095256269) which produced the image `ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc`.
 
 To get an overview of the images' attestations and signatures, we can use `cosign tree`:
 
 ```shell
-$ cosign tree ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf
-📦 Supply Chain Security Related artifacts for an image: ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf
-└── 💾 Attestations for an image tag: ghcr.io/liatrio/gh-trusted-builds-app:sha256-4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf.att
-   ├── 🍒 sha256:f140f88609749ad99e0583c52ecd5cf16c2e5e2c50cd6140364a991cc1af22da
-   ├── 🍒 sha256:e7cc98968e902f0063b9ad492b22ec2d0a647f343ed1689c0a37cb3ef76f9c31
-   ├── 🍒 sha256:995ef5f608938f03bf7415b6523a5ec1ca20d1f1cd37d650c233aeb3658fb1fa
-   └── 🍒 sha256:12aeea9cc2a04c31e5b714d8f0eba10538bced8b8ed2910d331bffd8b9a127c9
-└── 🔐 Signatures for an image tag: ghcr.io/liatrio/gh-trusted-builds-app:sha256-4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf.sig
-   └── 🍒 sha256:793d67120e57b2e8c947872e74dd286337f77ef757bfb33e2750b7f4759f6b39
+$ 📦 Supply Chain Security Related artifacts for an image: ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc
+└── 💾 Attestations for an image tag: ghcr.io/liatrio/gh-trusted-builds-app:sha256-294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc.att
+   ├── 🍒 sha256:86f0c07ab8720d5676dd38aa3c46c2179475f760d7fdbdeb8374292a00f86226
+   ├── 🍒 sha256:937fea3f79cff9469147cadb127e7721fb66eaee20e228756cad7c20b77296d8
+   ├── 🍒 sha256:e4a4239487d5a33cd3836d2654c7b76148b1810d1005c34796be3499021ed297
+   ├── 🍒 sha256:28dc5117fe59531af747159a7227f3f0a21175581b13873cce15912e3aaef204
+   └── 🍒 sha256:c4b6fb8b2b0e352135d21635d6724c93587370a179e61c39a32089d4d85274e8
+└── 🔐 Signatures for an image tag: ghcr.io/liatrio/gh-trusted-builds-app:sha256-294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc.sig
+   └── 🍒 sha256:010e941fc66633c54e29f2576dcb1e1c642a8c9313781b668dec26903a7998af
 ```
 
 First, we'll verify that the image was signed by the platform team's `build-and-push` workflow:
@@ -1004,14 +1122,14 @@ $ cosign verify \
     --certificate-identity https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@refs/heads/main \
     --certificate-github-workflow-repository liatrio/gh-trusted-builds-app \
     --rekor-url https://rekor.sigstore.dev \
-    ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf
+    ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc
 
-Verification for ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf --
+Verification for ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc --
 The following checks were performed on each of these signatures:
   - The specified annotations were verified.
   - The cosign claims were validated
   - Existence of the claims in the transparency log was verified offline
-  - The code-signing certificate was verified using trusted certificate authority certificates    
+  - The code-signing certificate was verified using trusted certificate authority certificates  
 ```
 
 The `verify` subcommand will also output the signature, so we can manually inspect the other fields for more information:
@@ -1021,51 +1139,53 @@ The `verify` subcommand will also output the signature, so we can manually inspe
 
 ```json
 [
-   {
-      "critical": {
-         "identity": {
-            "docker-reference": "ghcr.io/liatrio/gh-trusted-builds-app"
-         },
-         "image": {
-            "docker-manifest-digest": "sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf"
-         },
-         "type": "cosign container image signature"
+  {
+    "critical": {
+      "identity": {
+        "docker-reference": "ghcr.io/liatrio/gh-trusted-builds-app"
       },
-      "optional": {
-         "1.3.6.1.4.1.57264.1.1": "https://token.actions.githubusercontent.com",
-         "1.3.6.1.4.1.57264.1.2": "workflow_dispatch",
-         "1.3.6.1.4.1.57264.1.3": "e1f1d4396181766e12fca22f2ba856e8154b4304",
-         "1.3.6.1.4.1.57264.1.4": "app",
-         "1.3.6.1.4.1.57264.1.5": "liatrio/gh-trusted-builds-app",
-         "1.3.6.1.4.1.57264.1.6": "refs/heads/main",
-         "Bundle": {
-            "SignedEntryTimestamp": "MEYCIQDm8RSMstzmiigji2b7RDy5nmUlrnPaqyGNOiQUkIr3PAIhAOfv/FTjoa4UeKG98VD/XeBRIGnId/0o5MqPY4+UUw0k",
-            "Payload": {
-               "body": "eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJraW5kIjoiaGFzaGVkcmVrb3JkIiwic3BlYyI6eyJkYXRhIjp7Imhhc2giOnsiYWxnb3JpdGhtIjoic2hhMjU2IiwidmFsdWUiOiI3OTNkNjcxMjBlNTdiMmU4Yzk0Nzg3MmU3NGRkMjg2MzM3Zjc3ZWY3NTdiZmIzM2UyNzUwYjdmNDc1OWY2YjM5In19LCJzaWduYXR1cmUiOnsiY29udGVudCI6Ik1FVUNJUUQwVWJ0MWkyLzhBdWlqeENSS0NMNmNOak5xOXdRSk4wZXZSUlV0YW9qb0xnSWdZcE00bjdBSnJIbld0Q3FadHJReTdkVlJYU2piTDdLVEJWL2ExYUU1dDhVPSIsInB1YmxpY0tleSI6eyJjb250ZW50IjoiTFMwdExTMUNSVWRKVGlCRFJWSlVTVVpKUTBGVVJTMHRMUzB0Q2sxSlNVY3Zla05EUW05aFowRjNTVUpCWjBsVlFqRkVjRkZqTTBONldpOXBjRTQ0ZUVzM1JuSmtTbXBIT1VGemQwTm5XVWxMYjFwSmVtb3dSVUYzVFhjS1RucEZWazFDVFVkQk1WVkZRMmhOVFdNeWJHNWpNMUoyWTIxVmRWcEhWakpOVWpSM1NFRlpSRlpSVVVSRmVGWjZZVmRrZW1SSE9YbGFVekZ3WW01U2JBcGpiVEZzV2tkc2FHUkhWWGRJYUdOT1RXcE5kMDVVU1hwTlZHTXhUVlJCTkZkb1kwNU5hazEzVGxSSmVrMVVaM2ROVkVFMFYycEJRVTFHYTNkRmQxbElDa3R2V2tsNmFqQkRRVkZaU1V0dldrbDZhakJFUVZGalJGRm5RVVVyVjNCTE1GRkdLM1p1VVRKcGQzSmxZMGxPUW1OWGRsVlFTMjUwWm1vMVdEZEtUSGdLZUROUmFqZG1PRk4yYkVkeFozcDNhMmhPWlhGcWFrTldlVkY1VEhreU1WSldOM1JJVHpocGFFSjNZVVZtTkM5NlVtRlBRMEpoVlhkbloxZG9UVUUwUndwQk1WVmtSSGRGUWk5M1VVVkJkMGxJWjBSQlZFSm5UbFpJVTFWRlJFUkJTMEpuWjNKQ1owVkdRbEZqUkVGNlFXUkNaMDVXU0ZFMFJVWm5VVlZMZUhSNkNuTTFZME5VYkhGYWIyRndabUZDYkZGdGRHRkdXRVJ2ZDBoM1dVUldVakJxUWtKbmQwWnZRVlV6T1ZCd2VqRlphMFZhWWpWeFRtcHdTMFpYYVhocE5Ga0tXa1E0ZDJWbldVUldVakJTUVZGSUwwSklRWGRpYjFwellVaFNNR05JVFRaTWVUbHVZVmhTYjJSWFNYVlpNamwwVERKNGNGbFlVbmxoVnpoMldqSm5kQXBrU0VveFl6TlNiRnBETVdsa1YyeHpXa2hOZEdReU9YbGhNbHB6WWpOa2VreDVOVzVoV0ZKdlpGZEpkbVF5T1hsaE1scHpZak5rZWt3eVNqRmhWM2hyQ2t4WFJuVmFRekYzWkZoT2IweHViR2hpVjNoQlkyMVdiV041T1c5YVYwWnJZM2s1ZEZsWGJIVk5SR3RIUTJselIwRlJVVUpuTnpoM1FWRkZSVXN5YURBS1pFaENlazlwT0haa1J6bHlXbGMwZFZsWFRqQmhWemwxWTNrMWJtRllVbTlrVjBveFl6SldlVmt5T1hWa1IxWjFaRU0xYW1JeU1IZElkMWxMUzNkWlFncENRVWRFZG5wQlFrRm5VVkprTWpsNVlUSmFjMkl6WkdaYVIyeDZZMGRHTUZreVozZE9aMWxMUzNkWlFrSkJSMFIyZWtGQ1FYZFJiMXBVUm0xTlYxRXdDazE2YXpKTlZHZDRUbnBaTWxwVVJYbGFiVTVvVFdwS2JVMXRTbWhQUkZVeVdsUm5lRTVVVW1sT1JFMTNUa1JCVWtKbmIzSkNaMFZGUVZsUEwwMUJSVVVLUWtGT2FHTklRWGRMZDFsTFMzZFpRa0pCUjBSMmVrRkNRbEZSWkdKSGJHaGtTRXB3WW5rNWJtRkRNVEJqYmxaNlpFZFdhMHhYU2pGaFYzaHJZM2t4YUFwalNFRjNTRkZaUzB0M1dVSkNRVWRFZG5wQlFrSm5VVkJqYlZadFkzazViMXBYUm10amVUbDBXVmRzZFUxRWMwZERhWE5IUVZGUlFtYzNPSGRCVVdkRkNreFJkM0poU0ZJd1kwaE5Oa3g1T1RCaU1uUnNZbWsxYUZrelVuQmlNalY2VEcxa2NHUkhhREZaYmxaNldsaEthbUl5TlRCYVZ6VXdURzFPZG1KVVFqZ0tRbWR2Y2tKblJVVkJXVTh2VFVGRlNrSkhORTFpUjJnd1pFaENlazlwT0haYU1td3dZVWhXYVV4dFRuWmlVemx6WVZkR01HTnRiSFpNTW1SdlRGaFNlUXBrV0U0d1dsZFJkRmx1Vm5CaVIxSjZURmhrZG1OdGRHMWlSemt6WTNrNGRWb3liREJoU0ZacFRETmtkbU50ZEcxaVJ6a3pZM2s1YVdSWGJITmFRekZvQ21KdFVYUmpTRlo2WVVNMU5WbFhNWE5SU0Vwc1dtNU5kbUZIVm1oYVNFMTJZbGRHY0dKcVFUUkNaMjl5UW1kRlJVRlpUeTlOUVVWTFFrTnZUVXRFVFRNS1dtcE5lRTVxVVRGTmVrbDRUbXBCTUZwVVNtdE5WRVUwV1cxWmVVOUhWbXhhVkdjeldrZFZOVTVFWTNkYWFtTXpXbTFOZDBoUldVdExkMWxDUWtGSFJBcDJla0ZDUTNkUlVFUkJNVzVoV0ZKdlpGZEpkR0ZIT1hwa1IxWnJUVVZCUjBOcGMwZEJVVkZDWnpjNGQwRlJkMFZOWjNkM1lVaFNNR05JVFRaTWVUbHVDbUZZVW05a1YwbDFXVEk1ZEV3eWVIQlpXRko1WVZjNGRsb3laM1JrU0VveFl6TlNiRnBETVdsa1YyeHpXa2hOZEZsWVFuZE5SR2RIUTJselIwRlJVVUlLWnpjNGQwRlJNRVZMWjNkdldsUkdiVTFYVVRCTmVtc3lUVlJuZUU1NldUSmFWRVY1V20xT2FFMXFTbTFOYlVwb1QwUlZNbHBVWjNoT1ZGSnBUa1JOZHdwT1JFRm1RbWR2Y2tKblJVVkJXVTh2VFVGRlQwSkNSVTFFTTBwc1dtNU5kbUZIVm1oYVNFMTJZbGRHY0dKcVFWcENaMjl5UW1kRlJVRlpUeTlOUVVWUUNrSkJjMDFEVkZrd1RYcHJOVTFVVVhsT2FrRnhRbWR2Y2tKblJVVkJXVTh2VFVGRlVVSkNkMDFIYldnd1pFaENlazlwT0haYU1td3dZVWhXYVV4dFRuWUtZbE01YzJGWFJqQmpiV3gyVFVKalIwTnBjMGRCVVZGQ1p6YzRkMEZTUlVWRFVYZElUbFJqZVU1cVdYaFBSRUp5UW1kdmNrSm5SVVZCV1U4dlRVRkZVd3BDUmpCTlZ6Sm9NR1JJUW5wUGFUaDJXakpzTUdGSVZtbE1iVTUyWWxNNWMyRlhSakJqYld4MlRESmtiMHhZVW5sa1dFNHdXbGRSZEZsdVZuQmlSMUo2Q2t4WFJuZGpRemgxV2pKc01HRklWbWxNTTJSMlkyMTBiV0pIT1ROamVUbG9ZMGhCZFdWWFJuUmlSVUo1V2xkYWVrd3lhR3haVjFKNlRESXhhR0ZYTkhjS1QwRlpTMHQzV1VKQ1FVZEVkbnBCUWtWM1VYRkVRMmhzVFZkWmVGcEVVWHBQVkZsNFQwUkZNMDVxV214TlZFcHRXVEpGZVUxdFdYbFpiVVUwVGxSYWJBcFBSRVV4VGtkSk1FMTZRVEJOUTBWSFEybHpSMEZSVVVKbk56aDNRVkpSUlVWM2QxSmtNamw1WVRKYWMySXpaR1phUjJ4NlkwZEdNRmt5WjNkWmQxbExDa3QzV1VKQ1FVZEVkbnBCUWtaUlVsWkVSazV2WkVoU2QyTjZiM1pNTW1Sd1pFZG9NVmxwTldwaU1qQjJZa2RzYUdSSVNuQmllVGx1WVVNeE1HTnVWbm9LWkVkV2EweFhTakZoVjNoclkza3hhR05JUVhaWlYwNHdZVmM1ZFdONU9YbGtWelY2VEhwVmQwNXFRVEJPZWtFeFRucE5kbGxZVWpCYVZ6RjNaRWhOZGdwTlZFTkNhV2RaUzB0M1dVSkNRVWhYWlZGSlJVRm5VamhDU0c5QlpVRkNNa0ZPTURsTlIzSkhlSGhGZVZsNGEyVklTbXh1VG5kTGFWTnNOalF6YW5sMENpODBaVXRqYjBGMlMyVTJUMEZCUVVKcFJXMDRaVVIzUVVGQlVVUkJSV04zVWxGSloyTXphMWRrV2xOcmFWcFJkWFF5YVdJNGRWQXZVeloyVG5sRmRYb0tabkV3TDNVNFFXdHlaMUJ2Y1VWTlEwbFJRMnQxTmtrclMwOUtPWGw1SzJsdFpETm9halZzZFdkdU0yczBjMk0zVkZkUFdtbG9UR2xVT1VSYVJXcEJTd3BDWjJkeGFHdHFUMUJSVVVSQmQwNXVRVVJDYTBGcE9GWlpZblJUVTFoQ01VVmFXVzEwUTFwd1dVZ3lNemxwTkV0ck56VlpaM0ppUkdoNUsyeFpRVnBOQ2xNd2NFUTBXR3Q2WTBKT1F6TkZiV1JPTm5kNWFtZEplRUZPWW5OMldtdFRRa2xEVlZZdlNUaHBRVUpVWm1oSE0xcFVkR3gxYWtGeGNscFlTVFI0SzBJS1JtOTZaV3hKTjBGbmREWlBSMU5HVEdOREwyRndkVkpGY1VFOVBRb3RMUzB0TFVWT1JDQkRSVkpVU1VaSlEwRlVSUzB0TFMwdENnPT0ifX19fQ==",
-               "integratedTime": 1684864269,
-               "logIndex": 21449835,
-               "logID": "c0d23d6ad406973f9559f3ba2d1ca01f84147d8ffc5b8445c224f98b9591801d"
-            }
-         },
-         "Issuer": "https://token.actions.githubusercontent.com",
-         "Subject": "https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@refs/heads/main",
-         "githubWorkflowName": "app",
-         "githubWorkflowRef": "refs/heads/main",
-         "githubWorkflowRepository": "liatrio/gh-trusted-builds-app",
-         "githubWorkflowSha": "e1f1d4396181766e12fca22f2ba856e8154b4304",
-         "githubWorkflowTrigger": "workflow_dispatch",
-         "liatr.io/github-actions-run-link": "https://github.com/liatrio/gh-trusted-builds-app/actions/runs/5060470573",
-         "liatr.io/signed-off-by": "platform-team"
-      }
-   }
+      "image": {
+        "docker-manifest-digest": "sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc"
+      },
+      "type": "cosign container image signature"
+    },
+    "optional": {
+      "1.3.6.1.4.1.57264.1.1": "https://token.actions.githubusercontent.com",
+      "1.3.6.1.4.1.57264.1.2": "workflow_dispatch",
+      "1.3.6.1.4.1.57264.1.3": "54a0e5823b30c4fb8d0ff93b532e64d9478e012d",
+      "1.3.6.1.4.1.57264.1.4": "app",
+      "1.3.6.1.4.1.57264.1.5": "liatrio/gh-trusted-builds-app",
+      "1.3.6.1.4.1.57264.1.6": "refs/heads/main",
+      "Bundle": {
+        "SignedEntryTimestamp": "MEUCIQDLeeJTlGROlwuXen9V8c0vA0gNjh1kCgFI21I7hDlBDQIgQ9mpdPXzkNt3Sg/KupxNTUH6JvcOEa0JvAxdimybue8=",
+        "Payload": {
+          "body": "eyJhcGlWZXJzaW9uIjoiMC4wLjEiLCJraW5kIjoiaGFzaGVkcmVrb3JkIiwic3BlYyI6eyJkYXRhIjp7Imhhc2giOnsiYWxnb3JpdGhtIjoic2hhMjU2IiwidmFsdWUiOiIwMTBlOTQxZmM2NjYzM2M1NGUyOWYyNTc2ZGNiMWUxYzY0MmE4YzkzMTM3ODFiNjY4ZGVjMjY5MDNhNzk5OGFmIn19LCJzaWduYXR1cmUiOnsiY29udGVudCI6Ik1FWUNJUUNnMW4vVkZqV2xlL3V2bWpYMWszL3dTYWhKb3Y5c0hPY0VsRnp2L2gvT3Z3SWhBT0VvYnVLNFd6VzhQQ2cvVUptT2V2ODRHb0YwQ0RqRjVHQmlVN0s0dUFkcyIsInB1YmxpY0tleSI6eyJjb250ZW50IjoiTFMwdExTMUNSVWRKVGlCRFJWSlVTVVpKUTBGVVJTMHRMUzB0Q2sxSlNVaEJSRU5EUW05WFowRjNTVUpCWjBsVlEwVmhOVmhxTm5sSFdqSjZXazloVDAweFNta3JjRkJGTTJJMGQwTm5XVWxMYjFwSmVtb3dSVUYzVFhjS1RucEZWazFDVFVkQk1WVkZRMmhOVFdNeWJHNWpNMUoyWTIxVmRWcEhWakpOVWpSM1NFRlpSRlpSVVVSRmVGWjZZVmRrZW1SSE9YbGFVekZ3WW01U2JBcGpiVEZzV2tkc2FHUkhWWGRJYUdOT1RXcE5kMDVVU1RKTmFrbDNUVlJGTTFkb1kwNU5hazEzVGxSSk1rMXFTWGhOVkVVelYycEJRVTFHYTNkRmQxbElDa3R2V2tsNmFqQkRRVkZaU1V0dldrbDZhakJFUVZGalJGRm5RVVZsY1hORlFuZDBUMXBUU1hkSldUaEZSVmhQVGswMWJVdFFPQ3RUYW5wcE1EZEpkQzhLV2pkTk1ESm1hbE5rZEhCWFkwNTBjelpEZG5CNGNXeFhLekZVWm10TlRWVnFRVzkyY2l0WlFUQjRXbFZIYlRWM2R6WlBRMEpoVVhkbloxZG5UVUUwUndwQk1WVmtSSGRGUWk5M1VVVkJkMGxJWjBSQlZFSm5UbFpJVTFWRlJFUkJTMEpuWjNKQ1owVkdRbEZqUkVGNlFXUkNaMDVXU0ZFMFJVWm5VVlZyZDJaSENqTXlMMXBXVDBJNVIxZFNhSFJXYzFFeGJGbFdWemhaZDBoM1dVUldVakJxUWtKbmQwWnZRVlV6T1ZCd2VqRlphMFZhWWpWeFRtcHdTMFpYYVhocE5Ga0tXa1E0ZDJWbldVUldVakJTUVZGSUwwSklRWGRpYjFwellVaFNNR05JVFRaTWVUbHVZVmhTYjJSWFNYVlpNamwwVERKNGNGbFlVbmxoVnpoMldqSm5kQXBrU0VveFl6TlNiRnBETVdsa1YyeHpXa2hOZEdReU9YbGhNbHB6WWpOa2VreDVOVzVoV0ZKdlpGZEpkbVF5T1hsaE1scHpZak5rZWt3eVNqRmhWM2hyQ2t4WFJuVmFRekYzWkZoT2IweHViR2hpVjNoQlkyMVdiV041T1c5YVYwWnJZM2s1ZEZsWGJIVk5SR3RIUTJselIwRlJVVUpuTnpoM1FWRkZSVXN5YURBS1pFaENlazlwT0haa1J6bHlXbGMwZFZsWFRqQmhWemwxWTNrMWJtRllVbTlrVjBveFl6SldlVmt5T1hWa1IxWjFaRU0xYW1JeU1IZElkMWxMUzNkWlFncENRVWRFZG5wQlFrRm5VVkprTWpsNVlUSmFjMkl6WkdaYVIyeDZZMGRHTUZreVozZE9aMWxMUzNkWlFrSkJSMFIyZWtGQ1FYZFJiMDVVVW1oTlIxVXhDazlFU1hwWmFrMTNXWHBTYlZscWFHdE5SMXB0VDFST2FVNVVUWGxhVkZrd1drUnJNRTU2YUd4TlJFVjVXa1JCVWtKbmIzSkNaMFZGUVZsUEwwMUJSVVVLUWtGT2FHTklRWGRMZDFsTFMzZFpRa0pCUjBSMmVrRkNRbEZSWkdKSGJHaGtTRXB3WW5rNWJtRkRNVEJqYmxaNlpFZFdhMHhYU2pGaFYzaHJZM2t4YUFwalNFRjNTRkZaUzB0M1dVSkNRVWRFZG5wQlFrSm5VVkJqYlZadFkzazViMXBYUm10amVUbDBXVmRzZFUxRWMwZERhWE5IUVZGUlFtYzNPSGRCVVdkRkNreFJkM0poU0ZJd1kwaE5Oa3g1T1RCaU1uUnNZbWsxYUZrelVuQmlNalY2VEcxa2NHUkhhREZaYmxaNldsaEthbUl5TlRCYVZ6VXdURzFPZG1KVVFqZ0tRbWR2Y2tKblJVVkJXVTh2VFVGRlNrSkhORTFpUjJnd1pFaENlazlwT0haYU1td3dZVWhXYVV4dFRuWmlVemx6WVZkR01HTnRiSFpNTW1SdlRGaFNlUXBrV0U0d1dsZFJkRmx1Vm5CaVIxSjZURmhrZG1OdGRHMWlSemt6WTNrNGRWb3liREJoU0ZacFRETmtkbU50ZEcxaVJ6a3pZM2s1YVdSWGJITmFRekZvQ21KdFVYUmpTRlo2WVVNMU5WbFhNWE5SU0Vwc1dtNU5kbUZIVm1oYVNFMTJZbGRHY0dKcVFUUkNaMjl5UW1kRlJVRlpUeTlOUVVWTFFrTnZUVXRFUVhvS1dtcG5OVTU2YXpGWmFtaHJUbTFOTkZsdFNUTk9NazE1VGtSWmVWcFhVVFJOZWxwb1RXcG9iVnBVUW1oTlZFSnFXVmRWZDBoUldVdExkMWxDUWtGSFJBcDJla0ZDUTNkUlVFUkJNVzVoV0ZKdlpGZEpkR0ZIT1hwa1IxWnJUVVZCUjBOcGMwZEJVVkZDWnpjNGQwRlJkMFZOWjNkM1lVaFNNR05JVFRaTWVUbHVDbUZZVW05a1YwbDFXVEk1ZEV3eWVIQlpXRko1WVZjNGRsb3laM1JrU0VveFl6TlNiRnBETVdsa1YyeHpXa2hOZEZsWVFuZE5SR2RIUTJselIwRlJVVUlLWnpjNGQwRlJNRVZMWjNkdlRsUlNhRTFIVlRGUFJFbDZXV3BOZDFsNlVtMVphbWhyVFVkYWJVOVVUbWxPVkUxNVdsUlpNRnBFYXpCT2VtaHNUVVJGZVFwYVJFRm1RbWR2Y2tKblJVVkJXVTh2VFVGRlQwSkNSVTFFTTBwc1dtNU5kbUZIVm1oYVNFMTJZbGRHY0dKcVFWcENaMjl5UW1kRlJVRlpUeTlOUVVWUUNrSkJjMDFEVkZrd1RYcHJOVTFVVVhsT2FrRnhRbWR2Y2tKblJVVkJXVTh2VFVGRlVVSkNkMDFIYldnd1pFaENlazlwT0haYU1td3dZVWhXYVV4dFRuWUtZbE01YzJGWFJqQmpiV3gyVFVKalIwTnBjMGRCVVZGQ1p6YzRkMEZTUlVWRFVYZElUbFJqZVU1cVdYaFBSRUp5UW1kdmNrSm5SVVZCV1U4dlRVRkZVd3BDUmpCTlZ6Sm9NR1JJUW5wUGFUaDJXakpzTUdGSVZtbE1iVTUyWWxNNWMyRlhSakJqYld4MlRESmtiMHhZVW5sa1dFNHdXbGRSZEZsdVZuQmlSMUo2Q2t4WFJuZGpRemgxV2pKc01HRklWbWxNTTJSMlkyMTBiV0pIT1ROamVUbG9ZMGhCZFdWWFJuUmlSVUo1V2xkYWVrd3lhR3haVjFKNlRESXhhR0ZYTkhjS1QwRlpTMHQzV1VKQ1FVZEVkbnBCUWtWM1VYRkVRMmN4VGtkRmQxcFVWVFJOYWs1cFRYcENhazVIV21sUFIxRjNXbTFaTlUweVNURk5la3BzVG1wU2F3cFBWRkV6VDBkVmQwMVVTbXROUTBWSFEybHpSMEZSVVVKbk56aDNRVkpSUlVWM2QxSmtNamw1WVRKYWMySXpaR1phUjJ4NlkwZEdNRmt5WjNkWmQxbExDa3QzV1VKQ1FVZEVkbnBCUWtaUlVsWkVSazV2WkVoU2QyTjZiM1pNTW1Sd1pFZG9NVmxwTldwaU1qQjJZa2RzYUdSSVNuQmllVGx1WVVNeE1HTnVWbm9LWkVkV2EweFhTakZoVjNoclkza3hhR05JUVhaWlYwNHdZVmM1ZFdONU9YbGtWelY2VEhwVmQwOVVWWGxPVkZsNVRtcHJkbGxZVWpCYVZ6RjNaRWhOZGdwTlZFTkNhVkZaUzB0M1dVSkNRVWhYWlZGSlJVRm5VamRDU0d0QlpIZENNVUZPTURsTlIzSkhlSGhGZVZsNGEyVklTbXh1VG5kTGFWTnNOalF6YW5sMENpODBaVXRqYjBGMlMyVTJUMEZCUVVKcFJtOVZhMWhOUVVGQlVVUkJSVmwzVWtGSloyTk1VSEpwTjJWcVp5dGhjMnA2Tm5OdGJHOXNUekpXUmtoSFZVNEtNa2hSV0RsTWFtOTFiakJUWW01QlEwbEhjRlpHUkhaWFpXTk9WbEIwVkU1elRWSTVaSFZuWnpGaGJWcEpWM0pRYlV0WlFYaFFNM0ZZZDNaUlRVRnZSd3BEUTNGSFUwMDBPVUpCVFVSQk1tdEJUVWRaUTAxUlEwbFBNakY1TlhSUVpHMUJkRGhJY1ROdFdEbE1SbEZGZEdWeWVHTjNVM0Z2YTFobE1USldSbVZLQ2xWRWMyVTBjSGhhU1VoaFpWYzVUa2hRVDNSdWRsQnJRMDFSUkZOSGRIWkdOVVprUjBsa1RFRjJZMnQxZDNJeFEyeHBXSE5uV25GNlkyMHpZVkY0WlVrS2RIZHhlbFJqV2taS1NXWnFha3hOTmtoTVRrWnNVRkpDTlRsTlBRb3RMUzB0TFVWT1JDQkRSVkpVU1VaSlEwRlVSUzB0TFMwdENnPT0ifX19fQ==",
+          "integratedTime": 1685138477,
+          "logIndex": 21791129,
+          "logID": "c0d23d6ad406973f9559f3ba2d1ca01f84147d8ffc5b8445c224f98b9591801d"
+        }
+      },
+      "Issuer": "https://token.actions.githubusercontent.com",
+      "Subject": "https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@refs/heads/main",
+      "githubWorkflowName": "app",
+      "githubWorkflowRef": "refs/heads/main",
+      "githubWorkflowRepository": "liatrio/gh-trusted-builds-app",
+      "githubWorkflowSha": "54a0e5823b30c4fb8d0ff93b532e64d9478e012d",
+      "githubWorkflowTrigger": "workflow_dispatch",
+      "liatr.io/github-actions-run-link": "https://github.com/liatrio/gh-trusted-builds-app/actions/runs/5095256269",
+      "liatr.io/signed-off-by": "platform-team"
+    }
+  }
 ]
 ```
+
 </details>
 
 Now we'll verify each attestation that the pipeline produced using the `cosign verify-attestation` command
 - `https://liatr.io/attestations/github-pull-request/v1`
 - `https://slsa.dev/provenance/v0.2`
 - `https://cosign.sigstore.dev/attestation/vuln/v1`
+- `https://spdx.dev/Document`
 - `https://slsa.dev/verification_summary/v0.2` 
 
 First up is the custom pull request attestation. It was produced in the `build-and-push` workflow, so attestation verification looks similar to verifying the image:
@@ -1077,9 +1197,9 @@ $ cosign verify-attestation \
   --certificate-identity https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@refs/heads/main \
   --certificate-github-workflow-repository liatrio/gh-trusted-builds-app \
   --rekor-url https://rekor.sigstore.dev \
-  ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf
+  ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc
 
-Verification for ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf --
+Verification for ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc --
 The following checks were performed on each of these signatures:
   - The cosign claims were validated
   - Existence of the claims in the transparency log was verified offline
@@ -1087,7 +1207,7 @@ The following checks were performed on each of these signatures:
 Certificate subject:  https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@refs/heads/main
 Certificate issuer URL:  https://token.actions.githubusercontent.com
 GitHub Workflow Trigger: workflow_dispatch
-GitHub Workflow SHA: e1f1d4396181766e12fca22f2ba856e8154b4304
+GitHub Workflow SHA: 54a0e5823b30c4fb8d0ff93b532e64d9478e012d
 GitHub Workflow Name: app
 GitHub Workflow Trigger liatrio/gh-trusted-builds-app
 GitHub Workflow Ref: refs/heads/main
@@ -1102,9 +1222,9 @@ $ cosign verify-attestation \
   --certificate-identity https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@refs/heads/main \
   --certificate-github-workflow-repository liatrio/gh-trusted-builds-app \
   --rekor-url https://rekor.sigstore.dev \
-  ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf
-  
-Verification for ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf --
+  ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc
+ 
+Verification for ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc --
 The following checks were performed on each of these signatures:
   - The cosign claims were validated
   - Existence of the claims in the transparency log was verified offline
@@ -1112,10 +1232,10 @@ The following checks were performed on each of these signatures:
 Certificate subject:  https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@refs/heads/main
 Certificate issuer URL:  https://token.actions.githubusercontent.com
 GitHub Workflow Trigger: workflow_dispatch
-GitHub Workflow SHA: e1f1d4396181766e12fca22f2ba856e8154b4304
+GitHub Workflow SHA: 54a0e5823b30c4fb8d0ff93b532e64d9478e012d
 GitHub Workflow Name: app
 GitHub Workflow Trigger liatrio/gh-trusted-builds-app
-GitHub Workflow Ref: refs/heads/main  
+GitHub Workflow Ref: refs/heads/main
 ```
 
 Next, we can check for the vulnerability attestation produced in the `scan-image` workflow. This is another attestation type that `cosign` is familiar with, so we can use `--type vuln`:
@@ -1127,9 +1247,9 @@ $ cosign verify-attestation \
   --certificate-identity https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@refs/heads/main \
   --certificate-github-workflow-repository liatrio/gh-trusted-builds-app \
   --rekor-url https://rekor.sigstore.dev \
-  ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf
+  ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc
   
-Verification for ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf --
+Verification for ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc --
 The following checks were performed on each of these signatures:
   - The cosign claims were validated
   - Existence of the claims in the transparency log was verified offline
@@ -1137,10 +1257,35 @@ The following checks were performed on each of these signatures:
 Certificate subject:  https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@refs/heads/main
 Certificate issuer URL:  https://token.actions.githubusercontent.com
 GitHub Workflow Trigger: workflow_dispatch
-GitHub Workflow SHA: e1f1d4396181766e12fca22f2ba856e8154b4304
+GitHub Workflow SHA: 54a0e5823b30c4fb8d0ff93b532e64d9478e012d
 GitHub Workflow Name: app
 GitHub Workflow Trigger liatrio/gh-trusted-builds-app
-GitHub Workflow Ref: refs/heads/main  
+GitHub Workflow Ref: refs/heads/main
+```
+
+Similarly, we can verify the SBOM attestation. Like the SLSA provenance and vulnerability attestation types, this is another format the `cosign` understands natively:
+
+```shell
+$ cosign verify-attestation \
+  --type spdxjson \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@refs/heads/main \
+  --certificate-github-workflow-repository liatrio/gh-trusted-builds-app \
+  --rekor-url https://rekor.sigstore.dev \
+  ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc
+  
+Verification for ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc --
+The following checks were performed on each of these signatures:
+  - The cosign claims were validated
+  - Existence of the claims in the transparency log was verified offline
+  - The code-signing certificate was verified using trusted certificate authority certificates
+Certificate subject:  https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@refs/heads/main
+Certificate issuer URL:  https://token.actions.githubusercontent.com
+GitHub Workflow Trigger: workflow_dispatch
+GitHub Workflow SHA: 54a0e5823b30c4fb8d0ff93b532e64d9478e012d
+GitHub Workflow Name: app
+GitHub Workflow Trigger liatrio/gh-trusted-builds-app
+GitHub Workflow Ref: refs/heads/main
 ```
 
 Lastly, we can check the verification summary attestation produced by [`liatrio/gh-trusted-builds-attestations`](https://github.com/liatrio/gh-trusted-builds-attestations):
@@ -1151,9 +1296,9 @@ $ cosign verify-attestation \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/policy-verification.yaml@refs/heads/main \
   --certificate-github-workflow-repository liatrio/gh-trusted-builds-app \
-  ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf
+  ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc
 
-Verification for ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf --
+Verification for ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc --
 The following checks were performed on each of these signatures:
   - The cosign claims were validated
   - Existence of the claims in the transparency log was verified offline
@@ -1161,10 +1306,10 @@ The following checks were performed on each of these signatures:
 Certificate subject:  https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/policy-verification.yaml@refs/heads/main
 Certificate issuer URL:  https://token.actions.githubusercontent.com
 GitHub Workflow Trigger: workflow_dispatch
-GitHub Workflow SHA: e1f1d4396181766e12fca22f2ba856e8154b4304
+GitHub Workflow SHA: 54a0e5823b30c4fb8d0ff93b532e64d9478e012d
 GitHub Workflow Name: app
 GitHub Workflow Trigger liatrio/gh-trusted-builds-app
-GitHub Workflow Ref: refs/heads/main  
+GitHub Workflow Ref: refs/heads/main
 ```
 
 Even after verifying the image signature and attestations, there may still be checks we wish to do on the individual attestations, which is where [policy](https://github.com/liatrio/gh-trusted-builds-policy) comes in.
@@ -1179,10 +1324,10 @@ $ cosign verify-attestation \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@refs/heads/main \
   --certificate-github-workflow-repository liatrio/gh-trusted-builds-app \
-  ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf
+  ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc
   
-Error: none of the attestations matched the predicate type: foo, found: https://liatr.io/attestations/github-pull-request/v1,https://slsa.dev/provenance/v0.2
-main.go:74: error during command execution: none of the attestations matched the predicate type: foo, found: https://liatr.io/attestations/github-pull-request/v1,https://slsa.dev/provenance/v0.2  
+Error: none of the attestations matched the predicate type: foo, found: https://liatr.io/attestations/github-pull-request/v1,https://slsa.dev/provenance/v0.2,https://spdx.dev/Document
+main.go:74: error during command execution: none of the attestations matched the predicate type: foo, found: https://liatr.io/attestations/github-pull-request/v1,https://slsa.dev/provenance/v0.2,https://spdx.dev/Document
 ```
 
 We tried to ask `cosign` to verify the existence of a `foo` attestation, signed by the `build-and-push` workflow, and because there is no `foo` attestation, `cosign` will report that it wasn't able to find one.
@@ -1196,10 +1341,10 @@ $ cosign verify-attestation \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity https://github.com/liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@refs/heads/main \
   --certificate-github-workflow-repository liatrio/gh-trusted-builds-app \
-  ghcr.io/liatrio/gh-trusted-builds-app@sha256:4d9e77fedca29393dff9a39b065d158aaa9644c18b2c51f75fcaf84b8c941abf
+  ghcr.io/liatrio/gh-trusted-builds-app@sha256:294bafb143807a4afe6b90e6b8b208b9616798effc48e4018b6b9eef9a6ef6bc
   
-Error: none of the attestations matched the predicate type: vuln, found: https://liatr.io/attestations/github-pull-request/v1,https://slsa.dev/provenance/v0.2
-main.go:74: error during command execution: none of the attestations matched the predicate type: vuln, found: https://liatr.io/attestations/github-pull-request/v1,https://slsa.dev/provenance/v0.2  
+Error: none of the attestations matched the predicate type: vuln, found: https://liatr.io/attestations/github-pull-request/v1,https://slsa.dev/provenance/v0.2,https://spdx.dev/Document
+main.go:74: error during command execution: none of the attestations matched the predicate type: vuln, found: https://liatr.io/attestations/github-pull-request/v1,https://slsa.dev/provenance/v0.2,https://spdx.dev/Document
 ```
 
 In this case, the output is very similar, even though we know that the `vuln` attestation does exist. However, `cosign` first filters the signatures by the signer identities, so it's only looking at the identity that we specified (i.e., the `build-and-push` workflow).
