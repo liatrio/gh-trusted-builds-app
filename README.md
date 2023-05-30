@@ -390,6 +390,9 @@ The platform team's `build-and-push` workflow is split into several jobs:
 The `build` job uses Docker to build a container image, but doesn't push it to a container registry. 
 Instead, the job outputs a tar file that will be pushed by the next job. 
 The reason to split build and push is that the build step is executing untrusted code from the application team; consequently, we don't want that job to be able to request the id token that's used for signing or to try to push a malicious image.
+It's also often the case that organizations will use a central registry for all teams, and the authenticated machine identity is likely to have access to more repositories than the one used by the application image. 
+In that case, the `build` job could even push images to other repositories; while the authentication in this demo is scoped to the `liatrio/gh-trusted-builds-app` repository, it's still important to separate these steps for those reasons. 
+
 So the `build` job only has the permissions it needs in order to checkout the repo:
 
 ```yaml
@@ -405,7 +408,6 @@ Next up is the push job, which loads the tar file from the build job and pushes 
 jobs:
   push:
     permissions:
-      contents: read
       packages: write
 ```
 
