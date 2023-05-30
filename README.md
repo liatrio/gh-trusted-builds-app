@@ -361,7 +361,13 @@ Anyone can use the [Sigstore public good Fulcio instance](https://fulcio.sigstor
 
 #### Software Bill of Materials (SBOM)
 
+A software bill of materials describes the components that make up a software artifact.
+The SBOM includes the dependencies of an artifact and may include licensing information about the artifact and its dependencies.
+While an SBOM can be useful to enforce internal licensing standards, it's also valuable for vulnerability analysis; this is especially true when there's a need to retroactively look at software running in production and determine if it's vulnerable to a new attack.
+If an organization already has SBOMs for the software it's running, it becomes much easier to tell if there's an impact from a new vulnerability.
 
+There are several standard formats, like [SPDX](https://spdx.dev/) from the Linux Foundation and [CycloneDX](https://cyclonedx.org/) from OWASP.
+Fortunately, there are a number of tools for generating and working with SBOMs and most tools understand multiple standards. In this demonstration, we're using SPDX as the format and [Syft](https://github.com/anchore/syft) as the tool to generate SBOMs.
 
 ## Workflows
 
