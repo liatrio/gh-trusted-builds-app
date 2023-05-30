@@ -389,7 +389,7 @@ The platform team's `build-and-push` workflow is split into several jobs:
 
 The `build` job uses Docker to build a container image, but doesn't push it to a container registry. 
 Instead, the job outputs a tar file that will be pushed by the next job. 
-The reason to split build and push is that the build step is executing potentially untrusted code from the application team; consequently, we don't want that job to be able to request the id token that's used for signing or to try to push a malicious image. 
+The reason to split build and push is that the build step is executing untrusted code from the application team; consequently, we don't want that job to be able to request the id token that's used for signing or to try to push a malicious image.
 So the `build` job only has the permissions it needs in order to checkout the repo:
 
 ```yaml
