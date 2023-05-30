@@ -402,7 +402,7 @@ jobs:
       contents: read
 ```
 
-Next up is the push job, which loads the tar file from the build job and pushes it to GitHub Container Registry (GHCR). Like the build job, it only has the permissions it needs to checkout the repository and write to the registry:
+Next up is the push job, which loads the tar file from the build job and pushes it to GitHub Container Registry (GHCR). Like the build job, it only has the permissions it needs to write to the registry:
 
 ```yaml
 jobs:
