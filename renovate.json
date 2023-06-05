@@ -4,8 +4,7 @@
     "config:base",
     ":semanticCommits",
     ":semanticCommitTypeAll(build)",
-    ":semanticCommitScopeDisabled",
-    "helpers:pinGitHubActionDigests"
+    ":semanticCommitScopeDisabled"
   ],
   "enabledManagers": ["github-actions", "dockerfile", "gomod"],
   "pinDigests": true
