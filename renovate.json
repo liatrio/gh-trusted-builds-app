@@ -6,6 +6,5 @@
     ":semanticCommitTypeAll(build)",
     ":semanticCommitScopeDisabled"
   ],
-  "enabledManagers": ["github-actions", "dockerfile", "gomod"],
-  "pinDigests": true
+  "enabledManagers": ["github-actions", "dockerfile", "gomod"]
 }
