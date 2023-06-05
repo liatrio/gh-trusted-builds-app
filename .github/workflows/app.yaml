@@ -3,27 +3,28 @@ on:
   push:
     branches:
       - main
+      - refactor-identities
   workflow_dispatch:
 
 jobs:
   build-and-push:
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@main
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@refactor-identities
   security-scan:
     needs: [build-and-push]
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@main
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@refactor-identities
     with:
       digest: ${{ needs.build-and-push.outputs.digest }}
   policy-verification:
     needs:
       - build-and-push
       - security-scan
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/policy-verification.yaml@main
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/policy-verification.yaml@refactor-identities
     with:
       digest: ${{ needs.build-and-push.outputs.digest }}
   deploy:
     needs:
       - build-and-push
       - policy-verification
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/demo-deploy.yaml@main
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/demo-deploy.yaml@refactor-identities
     with:
       digest: ${{ needs.build-and-push.outputs.digest }}
