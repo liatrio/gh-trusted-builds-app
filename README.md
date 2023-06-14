@@ -180,9 +180,13 @@ In addition, a reusable workflow has different security features that make it de
 
 First and foremost is the fact that a reusable workflow runs in a separate virtual machine than other jobs in the caller's workflow.
 This is in contrast to an individual action, which always runs in the larger context of a job.
-Running on the same virtual machine as the workflow caller makes it difficult to access secrets in a way that doesn't also allow the caller to use them. It also means that a caller can
-manipulate the environment in order to do things like capture environment variables or snoop on network traffic.
+Running on the same virtual machine as the workflow caller makes it difficult to access secrets in a way that doesn't also allow the caller to use them. 
+It also means that a caller can manipulate the environment in order to do things like capture environment variables or snoop on network traffic.
 With reusable workflows, we can eliminate these concerns which would otherwise make it difficult for us to trust the attestations produced by the workflows.
+
+This demonstration also shows the use of least-privilege access with reusable workflows.
+Each reusable workflow is specifically granted the token permissions the caller will allow.
+This enables the caller repository to have a safer, read-only default to GitHub token permissions.
 
 #### GitHub Actions: OpenID Connect
 
