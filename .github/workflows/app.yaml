@@ -15,6 +15,8 @@ jobs:
       contents: read
       packages: write
       pull-requests: read
+    with:
+      environment: pre-prod
   security-scan:
     needs: [ build-and-push ]
     uses: liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@tuf-root-path
@@ -24,6 +26,7 @@ jobs:
       packages: write
     with:
       digest: ${{ needs.build-and-push.outputs.digest }}
+      environment: pre-prod
   policy-verification:
     needs:
       - build-and-push
@@ -35,6 +38,7 @@ jobs:
       packages: write
     with:
       digest: ${{ needs.build-and-push.outputs.digest }}
+      environment: pre-prod
   deploy:
     needs:
       - build-and-push
@@ -46,3 +50,4 @@ jobs:
       contents: read
     with:
       digest: ${{ needs.build-and-push.outputs.digest }}
+      environment: pre-prod
