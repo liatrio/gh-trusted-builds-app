@@ -41,6 +41,7 @@ jobs:
       - policy-verification
     uses: liatrio/gh-trusted-builds-workflows/.github/workflows/demo-deploy.yaml@tuf-root-path
     permissions:
+      id-token: write
       packages: read
       contents: read
     with:
