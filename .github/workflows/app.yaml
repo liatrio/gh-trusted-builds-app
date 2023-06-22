@@ -3,51 +3,45 @@ on:
   push:
     branches:
       - main
-      - config
   workflow_dispatch:
 
 jobs:
   build-and-push:
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@tuf-root-path
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@v2.0.0
     permissions:
       actions: read
       id-token: write
       contents: read
       packages: write
       pull-requests: read
-    with:
-      environment: pre-prod
   security-scan:
     needs: [ build-and-push ]
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@tuf-root-path
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@v2.0.0
     permissions:
       id-token: write
       contents: read
       packages: write
     with:
       digest: ${{ needs.build-and-push.outputs.digest }}
-      environment: pre-prod
   policy-verification:
     needs:
       - build-and-push
       - security-scan
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/policy-verification.yaml@tuf-root-path
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/policy-verification.yaml@v2.0.0
     permissions:
       id-token: write
       contents: read
       packages: write
     with:
       digest: ${{ needs.build-and-push.outputs.digest }}
-      environment: pre-prod
   deploy:
     needs:
       - build-and-push
       - policy-verification
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/demo-deploy.yaml@tuf-root-path
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/demo-deploy.yaml@v2.0.0
     permissions:
       id-token: write
       packages: read
       contents: read
     with:
       digest: ${{ needs.build-and-push.outputs.digest }}
-      environment: pre-prod
