@@ -2,7 +2,7 @@ name: app
 on:
   push:
     branches:
-      - main
+      - jono-test
   workflow_dispatch:
 
 jobs:
