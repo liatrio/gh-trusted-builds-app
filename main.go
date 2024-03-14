@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -9,22 +11,25 @@ import (
 
 func main() {
 	http.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("PONG"))
+		_, _ = w.Write([]byte("PONG"))
 	})
 
 	http.HandleFunc("/id", func(w http.ResponseWriter, r *http.Request) {
 		id := uuid.New()
-		w.Write([]byte(fmt.Sprintf(`{"id": "%s"}`, id.String())))
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"id": "%s"}`, id.String())))
 	})
 
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 
-	fmt.Println("Starting server on :8080")
-	http.ListenAndServe(":8080", nil)
+	log.Println("Starting server on :8080")
+	err := http.ListenAndServe(":8080", nil)
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalln("error starting server:", err)
+	}
 }
