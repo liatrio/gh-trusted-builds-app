@@ -6,5 +6,7 @@
     ":semanticCommitTypeAll(build)",
     ":semanticCommitScopeDisabled"
   ],
-  "enabledManagers": ["github-actions", "dockerfile", "gomod"]
+  "postUpdateOptions": [
+    "gomodTidy"
+  ]
 }
