@@ -11,7 +11,7 @@ import (
 
 func main() {
 	http.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("PONG"))
+		_, _ = w.Write([]byte("PING"))
 	})
 
 	http.HandleFunc("/id", func(w http.ResponseWriter, r *http.Request) {
