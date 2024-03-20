@@ -2,12 +2,12 @@ name: app
 on:
   push:
     branches:
-      - main
+      - sign-before-push
   workflow_dispatch:
 
 jobs:
   build-and-push:
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@v2.0.13
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@sign-before-push
     permissions:
       actions: read
       id-token: write
@@ -16,7 +16,7 @@ jobs:
       pull-requests: read
   security-scan:
     needs: [ build-and-push ]
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@v2.0.13
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@sign-before-push
     permissions:
       id-token: write
       contents: read
@@ -27,7 +27,7 @@ jobs:
     needs:
       - build-and-push
       - security-scan
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/policy-verification.yaml@v2.0.13
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/policy-verification.yaml@sign-before-push
     permissions:
       id-token: write
       contents: read
@@ -38,7 +38,7 @@ jobs:
     needs:
       - build-and-push
       - policy-verification
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/demo-deploy.yaml@v2.0.13
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/demo-deploy.yaml@sign-before-push
     permissions:
       id-token: write
       packages: read
