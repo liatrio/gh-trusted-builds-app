@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-and-push:
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@v2.1.0
+    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@gh-beta-test
     permissions:
       actions: read
       id-token: write
