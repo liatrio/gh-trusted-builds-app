@@ -15,6 +15,7 @@ jobs:
       contents: read
       packages: write
       pull-requests: read
+      attestations: write
   security-scan:
     needs: [ build-and-push ]
     uses: liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@v2.1.0
