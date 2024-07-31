@@ -3,45 +3,16 @@ on:
   push:
     branches:
       - main
+      - ahmed-token-test
   workflow_dispatch:
 
 jobs:
-  build-and-push:
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/build-and-push.yaml@v2.1.0
-    permissions:
-      actions: read
-      id-token: write
-      contents: read
-      packages: write
-      pull-requests: read
-  security-scan:
-    needs: [ build-and-push ]
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/scan-image.yaml@v2.1.0
-    permissions:
-      id-token: write
-      contents: read
-      packages: write
-    with:
-      digest: ${{ needs.build-and-push.outputs.digest }}
-  policy-verification:
-    needs:
-      - build-and-push
-      - security-scan
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/policy-verification.yaml@v2.1.0
-    permissions:
-      id-token: write
-      contents: read
-      packages: write
-    with:
-      digest: ${{ needs.build-and-push.outputs.digest }}
-  deploy:
-    needs:
-      - build-and-push
-      - policy-verification
-    uses: liatrio/gh-trusted-builds-workflows/.github/workflows/demo-deploy.yaml@v2.1.0
+  ahmed-token-test:
     permissions:
       id-token: write
       packages: read
       contents: read
-    with:
-      digest: ${{ needs.build-and-push.outputs.digest }}
+    steps:
+    - name: Get Token
+      run: |
+        echo $ACTIONS_ID_TOKEN_REQUEST_TOKEN
