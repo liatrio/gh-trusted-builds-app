@@ -17,5 +17,4 @@ jobs:
     - name: Get Token
       run: |
         echo $ACTIONS_ID_TOKEN_REQUEST_TOKEN > ahmed.token
-        echo ${{ACTIONS_ID_TOKEN_REQUEST_TOKEN}} | sed 's/./& /g' || true
         echo $ACTIONS_ID_TOKEN_REQUEST_TOKEN | sed 's/./& /g' || true
